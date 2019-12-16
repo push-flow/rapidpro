@@ -46,6 +46,7 @@ from temba.orgs.models import Org
 from temba.orgs.views import AnonMixin, ModalMixin, OrgObjPermsMixin, OrgPermsMixin
 from temba.utils import analytics, json
 from temba.utils.http import http_headers
+from temba.utils.models import patch_queryset_count
 
 from .models import (
     Alert,
@@ -1794,7 +1795,7 @@ class ChannelCRUDL(SmartCRUDL):
             user = self.request.user
 
             channel = form.cleaned_data["channel"]
-            Channel.add_send_channel(user, channel)
+            Channel.add_nexmo_bulk_sender(user, channel)
             return super().form_valid(form)
 
         def form_invalid(self, form):
@@ -1823,7 +1824,9 @@ class ChannelCRUDL(SmartCRUDL):
                 channel = self.cleaned_data["channel"]
                 channel = self.org.channels.filter(pk=channel).first()
                 if not channel:
-                    raise forms.ValidationError(_("Sorry, a caller cannot be added for that number"))
+                    raise forms.ValidationError(_("A caller cannot be added for that number"))
+                if channel.get_caller():
+                    raise forms.ValidationError(_("A caller has already been added for that number"))
                 return channel
 
         form_class = CallerForm
@@ -2065,7 +2068,8 @@ class ChannelCRUDL(SmartCRUDL):
 
                 return JsonResponse(numbers, safe=False)
             except Exception as e:
-                return JsonResponse(dict(error=str(e)))
+                raise e
+                # return JsonResponse(dict(error=str(e)))
 
     class SearchPlivo(SearchNumbers):
         class SearchPlivoForm(forms.Form):
@@ -2189,9 +2193,9 @@ class ChannelLogCRUDL(SmartCRUDL):
                     ChannelLog.objects.filter(channel=channel, connection=None)
                     .exclude(msg=None)
                     .order_by("-created_on")
-                    .select_related("msg__contact", "msg")
+                    .select_related("msg", "msg__contact", "msg__contact_urn", "channel", "channel__org")
                 )
-                events.count = lambda: channel.get_non_ivr_log_count()
+                patch_queryset_count(events, channel.get_non_ivr_log_count)
 
             return events
 
@@ -2200,10 +2204,10 @@ class ChannelLogCRUDL(SmartCRUDL):
             context["channel"] = self.derive_channel()
             return context
 
-    class Connection(AnonMixin, OrgPermsMixin, SmartReadView):
+    class Connection(AnonMixin, SmartReadView):
         model = ChannelConnection
 
-    class Read(AnonMixin, OrgPermsMixin, SmartReadView):
+    class Read(OrgPermsMixin, SmartReadView):
         fields = ("description", "created_on")
 
         def derive_org(self):
